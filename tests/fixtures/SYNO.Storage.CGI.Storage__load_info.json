@@ -1,0 +1,20 @@
+{"success": true, "data": {
+  "disks": [
+    {"id": "sata1", "name": "Drive 1", "longName": "Drive 1", "device": "/dev/sata1", "model": "WD40EFRX-68N32N0",
+     "vendor": "WDC", "serial": "WD-WCC7K0000001", "diskType": "SATA", "temp": 35, "smart_status": "normal",
+     "status": "normal", "overview_status": "normal", "size_total": "4000787030016", "used_by": "reuse_1"},
+    {"id": "sata2", "name": "Drive 2", "longName": "Drive 2", "device": "/dev/sata2", "model": "WD40EFRX-68N32N0",
+     "vendor": "WDC", "serial": "WD-WCC7K0000002", "diskType": "SATA", "temp": 37, "smart_status": "warning",
+     "status": "normal", "overview_status": "warning", "size_total": "4000787030016", "used_by": "reuse_1"},
+    {"id": "nvme0n1", "name": "M.2 Drive 1", "longName": "M.2 Drive 1", "device": "/dev/nvme0n1", "model": "SNV2S500G",
+     "vendor": "Kingston", "diskType": "M.2 NVMe", "temp": 0, "smart_status": "normal", "status": "normal",
+     "size_total": "500107862016", "used_by": "ssd_cache"}
+  ],
+  "storagePools": [{"id": "reuse_1", "pool_path": "reuse_1", "status": "normal", "raidType": "SHR", "disks": ["sata1", "sata2"]}],
+  "volumes": [
+    {"id": "volume_1", "vol_path": "/volume1", "pool_path": "reuse_1", "fs_type": "btrfs", "status": "normal",
+     "size": {"total": "3830512730112", "used": "1215752192000", "total_device": "3840000000000"}, "description": ""},
+    {"id": "volume_2", "vol_path": "/volume2", "pool_path": "reuse_1", "fs_type": "ext4", "status": "degraded",
+     "size": {"total": "100000000000", "used": "25000000000"}}
+  ]
+}}

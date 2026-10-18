@@ -1,0 +1,5 @@
+{"success": true, "data": [
+  {"ifname": "eth0", "ip": "192.168.1.30", "mask": "255.255.255.0", "speed": 1000, "status": "connected", "type": "lan", "use_dhcp": false},
+  {"ifname": "eth1", "ip": "", "mask": "", "speed": -1, "status": "disconnected", "type": "lan", "use_dhcp": true},
+  {"ifname": "pppoe", "ip": "", "mask": "", "speed": 0, "status": "disconnected", "type": "pppoe", "use_dhcp": false}
+]}

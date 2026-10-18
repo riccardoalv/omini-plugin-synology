@@ -1,0 +1,46 @@
+id: synology
+name: Synology DSM
+version: 0.1.0
+protocol: 1
+entrypoint: main.py
+timeout_s: 120
+description: >-
+  Synology NAS through the DSM Web API with a dedicated account: model,
+  serial, DSM version, CPU and memory use, uptime and system temperature,
+  network interfaces (MACs, IPv4 and IPv6, link state and speed), volumes
+  and their usage, disk temperatures, and Container Manager's containers
+  as services. Read-only.
+author: Omini
+homepage: https://github.com/riccardoalv/omini-plugin-synology
+fields:
+  - key: url
+    type: url
+    label: Address
+    required: true
+    help: >-
+      The DSM web interface, e.g. https://192.168.1.30:5001 (port 5001 is used
+      for https:// when none is given, 5000 for http://).
+  - key: username
+    type: string
+    label: Username
+    default: omini
+    required: true
+    help: >-
+      A dedicated DSM account without 2-step verification, as the plugin's
+      README explains.
+  - key: password
+    type: secret
+    label: Password
+    required: true
+  - key: verify_tls
+    type: bool
+    label: Verify the TLS certificate
+    default: false
+    group: Advanced
+    help: DSM uses a self-signed certificate by default; turn this on if yours is trusted.
+  - key: timeout_s
+    type: int
+    label: Wait for an answer (seconds)
+    default: 15
+    group: Advanced
+    help: How long to wait for each answer of the API (5 to 120). Raise it if the integration says DSM did not answer in time.

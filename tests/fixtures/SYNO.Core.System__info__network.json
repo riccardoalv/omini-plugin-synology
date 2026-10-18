@@ -1,0 +1,12 @@
+{"success": true, "data": {
+  "dns": "192.168.1.1", "enabled_domain": false, "enabled_samba": true, "gateway": "192.168.1.1",
+  "v6gateway": "fe80::1", "hostname": "diskstation",
+  "nif": [
+    {"addr": "192.168.1.30", "id": "eth0", "ipv6": [
+       {"addr": "2001:0db8:0001:0000:0000:0000:0000:0030", "prefix_len": 64, "scope": "global"},
+       {"addr": "fe80::211:32ff:fe12:3456", "prefix_len": 64, "scope": "link"}],
+     "mac": "00:11:32:12:34:56", "mask": "255.255.255.0", "type": "lan"},
+    {"addr": "", "id": "eth1", "ipv6": [], "mac": "00:11:32:12:34:57", "mask": "", "type": "lan"}
+  ],
+  "wins": "", "workgroup": "WORKGROUP"
+}}

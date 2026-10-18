@@ -1,0 +1,8 @@
+{"success": true, "data": {
+  "cpu": {"15min_load": 21, "1min_load": 18, "5min_load": 20, "device": "System", "other_load": 1, "system_load": 3, "user_load": 5},
+  "memory": {"avail_real": 5632000, "avail_swap": 4194300, "buffer": 120000, "cached": 3000000, "device": "Memory",
+             "memory_size": 8388608, "real_usage": 23, "si_disk": 0, "so_disk": 0, "swap_usage": 0,
+             "total_real": 7864320, "total_swap": 4194300},
+  "network": [{"device": "total", "rx": 2048, "tx": 1024}, {"device": "eth0", "rx": 2048, "tx": 1024}],
+  "time": 1792312500
+}}

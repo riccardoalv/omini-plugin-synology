@@ -1,0 +1,8 @@
+{"success": true, "data": {
+  "cpu_clock_speed": 2000, "cpu_cores": "4", "cpu_family": "Celeron", "cpu_series": "J4125", "cpu_vendor": "INTEL",
+  "enabled_ntp": true, "firmware_date": "2024/09/03", "firmware_ver": "DSM 7.2.2-72806 Update 1",
+  "model": "DS920+", "ntp_server": "time.google.com", "ram_size": 8192, "serial": "2080PDN123456",
+  "support_esata": "yes", "sys_temp": 47, "sys_tempwarn": false, "systempwarn": false,
+  "temperature_warning": false, "time": "2026-10-18 10:15:00", "time_zone": "Brasilia",
+  "time_zone_desc": "(GMT-03:00) Brasilia", "up_time": "171:57:22", "usb_dev": []
+}}

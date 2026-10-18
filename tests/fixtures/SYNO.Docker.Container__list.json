@@ -1,0 +1,9 @@
+{"success": true, "data": {
+  "containers": [
+    {"id": "9a8b7c6d5e4f", "name": "plex", "image": "plexinc/pms-docker:latest", "status": "running",
+     "up_status": "Up 2 days", "is_ddsm": false, "State": {"Running": true, "Status": "running", "StartedAt": "2026-10-16T08:00:00Z"}},
+    {"id": "1a2b3c4d5e6f", "name": "backup-job", "image": "restic/restic:0.17.1", "status": "stopped",
+     "up_status": "Exited (0) 3 hours ago", "is_ddsm": false, "State": {"Running": false, "Status": "exited"}}
+  ],
+  "limit": -1, "offset": 0, "total": 2
+}}
