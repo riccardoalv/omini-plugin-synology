@@ -112,7 +112,7 @@ def test_the_connection_test_signs_out(dsm, cfg):
         msg == "Connected to DS920+ (nas-office), DSM 7.2.2-72806 Update 1: 2 volumes, 2 containers"
     )
     assert dsm.logouts == 1 and not dsm.sessions
-    assert "sid" not in json.loads((cfg.state_dir / "session.json").read_text())
+    assert not (cfg.state_dir / "session.json").exists()  # forgotten
 
 
 def test_only_reads(dsm, cfg):
@@ -125,7 +125,7 @@ def test_only_reads(dsm, cfg):
 
 
 def test_a_wrong_password_waits_before_signing_in_again(dsm, cfg):
-    cfg["password"] = "wrong"
+    good, cfg["password"] = cfg["password"], "wrong"
     with pytest.raises(PluginError, match="rejected the username or password") as e:
         collect(cfg)
     assert "wrong" not in str(e.value)
@@ -133,7 +133,21 @@ def test_a_wrong_password_waits_before_signing_in_again(dsm, cfg):
     with pytest.raises(PluginError, match="waiting a few minutes"):
         collect(cfg)
     assert not any(m == "login" for *_, m in dsm.calls[calls:])  # DSM was not asked
-    assert "wrong" not in (cfg.state_dir / "session.json").read_text()
+    refused = cfg.state_dir / "login-refused.json"
+    assert stat.S_IMODE(os.stat(refused).st_mode) == 0o600
+    assert "wrong" not in refused.read_text()
+    cfg["password"] = good  # new credentials are tried at once
+    [d] = collect(cfg)
+    assert d.name == "nas-office" and not refused.exists()  # a good sign-in clears it
+
+
+def test_only_a_refused_password_waits(dsm, cfg):
+    dsm.login_code = 407  # the address is blocked: not a wrong password
+    with pytest.raises(PluginError, match="Allow/Block List"):
+        collect(cfg)
+    dsm.login_code = None
+    [d] = collect(cfg)  # signed in at the next run
+    assert d.name == "nas-office" and dsm.logins == 1
 
 
 def test_two_step_verification_needs_another_account(dsm, cfg):
@@ -183,16 +197,91 @@ def test_not_dsm(dsm, cfg):
         connection_test(cfg)
 
 
-def test_a_timeout_is_an_error_the_user_can_read(dsm, cfg):
+@pytest.fixture
+def pauses(monkeypatch):
+    out = []
+    monkeypatch.setattr("time.sleep", out.append)
+    return out
+
+
+def test_a_timeout_is_an_error_the_user_can_read(dsm, cfg, pauses):
     dsm.http_errors["/webapi/entry.cgi"] = httpx.ReadTimeout("slow")
     with pytest.raises(PluginError, match="did not answer in time"):
         collect(cfg)
+    assert pauses == []  # the sign-in is a POST: never sent again after a timeout
 
 
-def test_unreachable_host(cfg):
+def test_an_optional_api_that_times_out_is_skipped(dsm, cfg, pauses, monkeypatch):
+    """Like every plugin: optional data DSM does not answer in time is left
+    out, the rest is reported."""
+    handler = dsm.handler
+
+    def slow_storage(request):
+        if "SYNO.Storage.CGI.Storage" in str(request.url):
+            raise httpx.ReadTimeout("slow", request=request)
+        return handler(request)
+
+    use(monkeypatch, slow_storage)
+    [d] = collect(cfg)
+    assert d.storage is None and d.interfaces and d.services
+    assert pauses == [1.0]  # the read was asked once more
+
+
+def test_a_busy_nas_is_asked_again(dsm, cfg, pauses, monkeypatch):
+    busy = {"left": 1}
+
+    def flaky(request):
+        if busy["left"]:
+            busy["left"] -= 1
+            return httpx.Response(503)
+        return dsm.handler(request)
+
+    use(monkeypatch, flaky)
+    [d] = collect(cfg)
+    assert d.name == "nas-office" and pauses == [1.0]
+
+
+def use(monkeypatch, handler):
+    from functools import partial
+
+    import omini_synology.collect as collect_module
+    from omini_synology.client import Client
+
+    monkeypatch.setattr(
+        collect_module, "Client", partial(Client, transport=httpx.MockTransport(handler))
+    )
+
+
+def test_an_unknown_api_answer_is_skipped(dsm, cfg):
+    dsm.codes["SYNO.Core.System.Utilization"] = 103  # no such method on this DSM
+    [d] = collect(cfg)
+    assert d.cpu_pct is None and d.mem_pct is None and d.storage
+    assert "may not read" not in connection_test(cfg)
+
+
+def test_without_the_management_interface_the_lowest_port_mac_is_the_key(dsm, cfg):
+    cfg["url"] = "https://nas.lan:5001"
+    dsm.routes["SYNO.Core.System__info__network"]["data"]["nif"] = [
+        {**n, "addr": "", "ipv6": []}
+        for n in dsm.routes["SYNO.Core.System__info__network"]["data"]["nif"]
+    ]
+    dsm.routes["SYNO.Core.Network.Interface__list"]["data"] = []
+    [d] = collect(cfg)
+    assert d.key == "00:11:32:12:34:56"
+
+
+def test_without_interfaces_the_nas_is_keyed_by_its_serial(dsm, cfg):
+    dsm.codes["SYNO.Core.Network.Interface"] = 105
+    dsm.routes.pop("SYNO.Core.System__info__network")
+    [d] = collect(cfg)
+    assert d.key == "synology:2080PDN123456"  # never the server name (it can be edited)
+
+
+def test_unreachable_host(cfg, pauses):
     cfg["url"] = "https://127.0.0.1:9"
     with pytest.raises(PluginError, match="cannot connect"):
         connection_test(cfg)
+    assert pauses == [1.0, 2.0]
 
 
 def test_required_fields(dsm, cfg):

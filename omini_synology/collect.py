@@ -20,6 +20,8 @@ from omini_sdk import (
     Temperature,
     log,
 )
+from omini_sdk import optional as sdk_optional
+from omini_sdk.http import settings as http_settings
 
 from omini_synology.client import Client, Forbidden, NotFound, Unavailable
 
@@ -31,8 +33,9 @@ ADMIN = "a member of the administrators group (see the plugin's README)"
 
 
 def wait_s(cfg: Config) -> float:
-    """How long to wait for each answer: the "timeout_s" field, 5 to 120 s."""
-    return float(min(max(cfg.int("timeout_s", 15) or 15, 5), 120))
+    """How long to wait for each answer: the "timeout_s" field (the SDK's
+    default, 15 s), kept within 5 to 120 s."""
+    return float(min(max(http_settings(cfg)["timeout"], 5), 120))
 
 
 def client_from(cfg: Config) -> Client:
@@ -43,9 +46,8 @@ def client_from(cfg: Config) -> Client:
         url,
         user,
         password,
-        verify_tls=cfg.bool("verify_tls", False),
-        timeout=wait_s(cfg),
         state_dir=cfg.state_dir,
+        **{**http_settings(cfg), "timeout": wait_s(cfg)},
     )
 
 
@@ -127,22 +129,11 @@ def dsm_version(value: Any) -> str | None:
 
 
 def optional(what: str, missing: list[str], fn: Callable[[], T], default: T) -> T:
-    """Optional data: an API the account may not use, or a package that is not
-    installed, never fails the collection."""
-    try:
-        return fn()
-    except Forbidden:
-        log.warning("the account may not read %s (it needs to be %s)", what, ADMIN)
-        missing.append(what)
-    except NotFound:
-        log.info("%s not available on this DSM", what)
-    except Unavailable as e:
-        log.info("%s not available: %s", what, e)
-    except PluginError:
-        raise
-    except Exception:
-        log.exception("could not read %s", what)
-    return default
+    """Optional data: an API the account may not use, a package that is not
+    installed, or a DSM that does not answer it now, never fails the
+    collection (the SDK's optional); a refused API goes in ``missing`` by
+    its name."""
+    return sdk_optional(what, fn, default, missing=missing)
 
 
 # --- pieces ------------------------------------------------------------------
@@ -206,6 +197,18 @@ def port_type(name: str, kind: str) -> str:
     if name.startswith("eth"):
         return "ethernet"
     return "other"
+
+
+def key_of(mgmt: Interface | None, ifaces: list[Interface], serial: str | None, host: str) -> str:
+    """The MAC of the interface Omini reaches DSM on; else the lowest MAC of
+    a physical port; else the serial; else the address of the form (never
+    the server name, which can be edited)."""
+    if mgmt and mgmt.mac:
+        return mgmt.mac
+    physical = sorted(i.mac for i in ifaces if i.type == "ethernet" and i.mac)
+    if physical:
+        return physical[0]
+    return f"synology:{serial or host}"
 
 
 def gateways(network: Any) -> list[Gateway]:
@@ -288,7 +291,11 @@ def system_info(c: Client) -> dict[str, Any]:
         raise PluginError(
             f"the DSM account may not read the system information: it needs to be {ADMIN}"
         ) from e
-    except (NotFound, Unavailable) as e:
+    except Unavailable as e:
+        if e.status is None:  # out of reach, or no answer in time
+            raise
+        raise PluginError(f"DSM did not give its system information: {e}") from e
+    except NotFound as e:
         raise PluginError(f"DSM did not give its system information: {e}") from e
     if not isinstance(info, dict):
         raise PluginError(f"{c.base} does not look like DSM (no system information)")
@@ -350,7 +357,7 @@ def nas_device(c: Client, missing: list[str]) -> Device:
             gw_source.setdefault(k, general.get(k))
     ram_mb = counter(info.get("ram_size"))
     return Device(
-        key=(mgmt.mac if mgmt and mgmt.mac else None) or f"synology:{serial or name}",
+        key=key_of(mgmt, ifaces, serial, c.host),
         name=name,
         host=c.host if address(c.host) else (ips[0] if ips else None),
         role="server",

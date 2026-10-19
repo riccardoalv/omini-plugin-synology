@@ -142,11 +142,15 @@ name = "omini-sdk"
 version = "0.1.0"
 source = { directory = "../omini/sdk/python" }
 dependencies = [
+    { name = "httpx" },
     { name = "pydantic" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "pydantic", specifier = ">=2.6" }]
+requires-dist = [
+    { name = "httpx", specifier = ">=0.27,<1" },
+    { name = "pydantic", specifier = ">=2.6" },
+]
 
 [package.metadata.requires-dev]
 dev = [

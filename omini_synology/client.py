@@ -1,22 +1,34 @@
-"""Minimal Synology DSM Web API client: signs in with SYNO.API.Auth, keeps the
-session (sid) in the state folder, and calls APIs by name.
+"""Synology DSM Web API client, on the SDK's HTTP client: signs in with
+SYNO.API.Auth, keeps the session (sid) in the state folder (the SDK's
+``Session``), waits 10 minutes after DSM refuses the password
+(``LoginBackoff``), and calls APIs by name. DSM answers its errors as codes in
+a 200; ``call`` turns them into the SDK's errors (105 → Forbidden, 102 to 104
+→ NotFound).
 
 https://global.download.synology.com/download/Document/Software/DeveloperGuide/Os/DSM/All/enu/DSM_Login_Web_API_Guide_enu.pdf
 """
 
 from __future__ import annotations
 
-import hashlib
-import json
 import logging
-import os
-import time
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 from omini_sdk import PluginError, log
+from omini_sdk.http import Client as HttpClient
+from omini_sdk.http import (
+    Forbidden,
+    HttpError,
+    LoginBackoff,
+    NotFound,
+    Session,
+    Unauthorized,
+    Unavailable,
+    normalize_url,
+)
+
+__all__ = ["Client", "Forbidden", "NotFound", "Unavailable", "base_url"]
 
 # httpx logs every request's URL at INFO; a DSM URL carries the session id.
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -29,6 +41,7 @@ PERMISSION_DENIED = 105
 SESSION_GONE = {106, 107, 119}  # timed out, interrupted by another login, sid not found
 
 # Codes of SYNO.API.Auth login.
+WRONG_PASSWORD = 400
 LOGIN_ERRORS = {
     400: "DSM rejected the username or password",
     401: "the DSM account is disabled",
@@ -51,46 +64,20 @@ LOGIN_ERRORS = {
     410: "DSM asks to change the password of the account: sign in once in DSM and change it",
 }
 
-# After DSM refuses the credentials, wait before signing in again: DSM blocks
-# an address after repeated failed sign-ins (10 in 5 minutes by default).
-LOGIN_BACKOFF_S = 10 * 60
-
-
-class Forbidden(Exception):
-    """The account may not use an API (code 105)."""
-
-
-class NotFound(Exception):
-    """The API, method or version does not exist on this DSM (a package that
-    is not installed, such as Container Manager)."""
-
-
-class Unavailable(Exception):
-    """The API answered with another error code."""
+# After DSM refuses the password, wait before signing in again: DSM blocks an
+# address after repeated failed sign-ins (10 in 5 minutes by default).
+LOGIN_BACKOFF_MIN = 10
 
 
 def base_url(url: str) -> str:
     """'192.168.1.30' → 'https://192.168.1.30:5001'; http:// → port 5000."""
-    url = url.strip().rstrip("/")
-    if "://" not in url:
-        url = "https://" + url
-    parts = urlsplit(url)
-    if parts.scheme not in ("http", "https") or not parts.hostname:
-        raise PluginError("the address looks like https://192.168.1.30:5001")
-    netloc = parts.netloc
-    if parts.port is None:
-        netloc = f"{netloc}:{5001 if parts.scheme == 'https' else 5000}"
-    path = parts.path
-    if path.endswith("/webapi"):
-        path = path[: -len("/webapi")]
-    return urlunsplit((parts.scheme, netloc, path, "", ""))
+    try:
+        return normalize_url(url, port={"https": 5001, "http": 5000}, strip=("/webapi",))
+    except PluginError as e:
+        raise PluginError("the address looks like https://192.168.1.30:5001") from e
 
 
-def fingerprint(url: str, username: str, password: str) -> str:
-    return hashlib.sha256(f"{url}\0{username}\0{password}".encode()).hexdigest()
-
-
-class Client:
+class Client(HttpClient):
     def __init__(
         self,
         url: str,
@@ -101,26 +88,25 @@ class Client:
         state_dir: Path | None = None,
         transport: httpx.BaseTransport | None = None,
     ):
-        self.base = base_url(url)
+        super().__init__(
+            base_url(url),
+            name="DSM",
+            api="/webapi",
+            verify_tls=verify_tls,
+            timeout=timeout,
+            user_agent="omini-plugin-synology",
+            transport=transport,
+        )
         self.username = username
         self.password = password
         self.state_dir = state_dir
-        self.fingerprint = fingerprint(self.base, username, password)
-        self.http = httpx.Client(
-            base_url=self.base + "/webapi",
-            verify=verify_tls,
-            timeout=timeout,
-            headers={"Accept": "application/json", "User-Agent": "omini-plugin-synology"},
-            transport=transport,
+        self.session = Session(state_dir, self.base, username, password)
+        self.backoff_login = LoginBackoff(
+            state_dir, self.base, username, password, minutes=LOGIN_BACKOFF_MIN
         )
         self.apis: dict[str, dict[str, Any]] | None = None
-        saved = self._load()
-        self.sid: str | None = saved.get("sid") if saved.get("for") == self.fingerprint else None
+        self.sid: str | None = self.session.load().get("sid")
         self.logins = 0
-
-    @property
-    def host(self) -> str:
-        return urlsplit(self.base).hostname or ""
 
     def close(self, logout: bool = False) -> None:
         """Ends the run. With logout, the session is closed on DSM too and
@@ -129,61 +115,30 @@ class Client:
             if logout and self.sid:
                 self.logout()
         finally:
-            self.http.close()
-
-    # --- state ------------------------------------------------------------------
-
-    def _state_file(self) -> Path | None:
-        return self.state_dir / "session.json" if self.state_dir else None
-
-    def _load(self) -> dict[str, Any]:
-        f = self._state_file()
-        try:
-            return json.loads(f.read_text()) if f and f.exists() else {}
-        except (OSError, ValueError):
-            return {}
-
-    def _write(self, data: dict[str, Any]) -> None:
-        """Only the session id and a hash of the address and credentials are
-        kept, readable by the owner only; never the password."""
-        f = self._state_file()
-        if not f:
-            return
-        try:
-            f.parent.mkdir(parents=True, exist_ok=True)
-            fd = os.open(f, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-            with os.fdopen(fd, "w") as out:
-                json.dump(data, out)
-            os.chmod(f, 0o600)
-        except OSError:
-            log.debug("could not save the session")
+            super().close()
 
     # --- transport ----------------------------------------------------------------
 
-    def _send(self, method: str, path: str, **kw: Any) -> dict[str, Any]:
-        try:
-            r = self.http.request(method, path, **kw)
-        except httpx.ConnectError as e:
-            raise PluginError(f"cannot connect to {self.base}") from e
-        except httpx.TimeoutException as e:
-            raise PluginError(f"{self.base} did not answer in time") from e
-        except httpx.HTTPError as e:
-            raise PluginError(f"request to {self.base} failed ({type(e).__name__})") from e
-        if r.status_code in (401, 403):
-            raise PluginError(
-                f"{self.base} refused the request (HTTP {r.status_code}): "
+    def check(self, r: httpx.Response, method: str, path: str) -> None:
+        """DSM itself answers 200 (its errors are codes in the answer): an
+        HTTP error is something else in the way, or not DSM."""
+        status = r.status_code
+        where = {"status": status, "method": method, "resource": path}
+        if status in (401, 403):
+            message = (
+                f"{self.base} refused the request (HTTP {status}): "
                 "a reverse proxy or DSM's firewall in the way?"
             )
-        if r.status_code == 404:
-            raise PluginError(f"{self.base} has no DSM Web API (/webapi): is it the DSM address?")
-        if r.status_code >= 400:
-            raise PluginError(f"{self.base} answered HTTP {r.status_code}")
-        try:
-            body = r.json()
-        except json.JSONDecodeError as e:
-            raise PluginError(
-                f"{self.base} did not answer with JSON: is it the DSM address?"
-            ) from e
+            raise Unauthorized(message, **where) if status == 401 else HttpError(message, **where)
+        if status == 404:
+            raise NotFound(
+                f"{self.base} has no DSM Web API (/webapi): is it the DSM address?", **where
+            )
+        super().check(r, method, path)
+
+    def dsm(self, method: str, path: str, **kw: Any) -> dict[str, Any]:
+        """A Web API answer: {"success": ..., "data" or "error": ...}."""
+        body = self.request(method, path, **kw)
         if not isinstance(body, dict) or "success" not in body:
             raise PluginError(f"{self.base} does not look like DSM (no Web API answer)")
         return body
@@ -191,7 +146,7 @@ class Client:
     def api(self, name: str) -> dict[str, Any]:
         """Path and versions of an API, from SYNO.API.Info (no session needed)."""
         if self.apis is None:
-            body = self._send(
+            body = self.dsm(
                 "GET",
                 "/query.cgi",
                 params={"api": "SYNO.API.Info", "version": "1", "method": "query", "query": "all"},
@@ -202,7 +157,7 @@ class Client:
             self.apis = data
         info = self.apis.get(name)
         if not isinstance(info, dict) or not info.get("path"):
-            raise NotFound(name)
+            raise NotFound(f"DSM has no {name}", resource=name)
         return info
 
     def _version(self, name: str, wanted: int) -> tuple[str, int]:
@@ -213,18 +168,10 @@ class Client:
     # --- session --------------------------------------------------------------------
 
     def login(self) -> None:
-        saved = self._load()
-        refused = saved.get("refused") or {}
-        if (
-            refused.get("for") == self.fingerprint
-            and time.time() - refused.get("at", 0) < LOGIN_BACKOFF_S
-        ):
-            raise PluginError(
-                f"{refused.get('error')} (waiting a few minutes before signing in again)"
-            )
+        self.backoff_login.check()
         path, version = self._version("SYNO.API.Auth", 6)
         # A POST, so the password never shows in a URL (DSM's logs, proxies).
-        body = self._send(
+        body = self.dsm(
             "POST",
             "/" + path,
             data={
@@ -241,19 +188,18 @@ class Client:
         if not sid:
             code = (body.get("error") or {}).get("code")
             message = LOGIN_ERRORS.get(code, f"DSM refused the sign-in (code {code})")
-            if code in (400, 401, 407):  # retrying makes it worse: wait
-                self._write(
-                    {"refused": {"for": self.fingerprint, "at": time.time(), "error": message}}
-                )
+            if code == WRONG_PASSWORD:  # trying again would get the address blocked: wait
+                self.backoff_login.refused(message)
             raise PluginError(message)
         self.sid = str(sid)
         self.logins += 1
-        self._write({"for": self.fingerprint, "sid": self.sid})
+        self.backoff_login.clear()
+        self.session.save({"sid": self.sid})
 
     def logout(self) -> None:
         try:
             path, version = self._version("SYNO.API.Auth", 6)
-            self._send(
+            self.dsm(
                 "GET",
                 "/" + path,
                 params={
@@ -264,11 +210,10 @@ class Client:
                     "_sid": self.sid,
                 },
             )
-        except (PluginError, NotFound):
+        except PluginError:
             log.info("could not sign out of DSM")
         self.sid = None
-        if self._load().get("sid"):
-            self._write({})
+        self.session.clear()
 
     def call(self, name: str, method: str, version: int = 1, **params: Any) -> Any:
         """Calls an API method with the session and returns its `data`. A
@@ -278,7 +223,7 @@ class Client:
             if not self.sid:
                 self.login()
             query = {"api": name, "version": str(v), "method": method, **params, "_sid": self.sid}
-            body = self._send("GET", "/" + path, params=query)
+            body = self.dsm("GET", "/" + path, params=query)
             if body.get("success"):
                 return body.get("data")
             code = (body.get("error") or {}).get("code")
@@ -286,9 +231,10 @@ class Client:
                 log.info("DSM session expired (code %s), signing in again", code)
                 self.sid = None
                 continue
+            where = {"method": method, "resource": name}
             if code == PERMISSION_DENIED:
-                raise Forbidden(name)
+                raise Forbidden(f"the DSM account may not use {name}", status=None, **where)
             if code in NO_SUCH_API:
-                raise NotFound(name)
-            raise Unavailable(f"{name} {method}: code {code}")
+                raise NotFound(f"DSM has no {name} {method} (code {code})", **where)
+            raise Unavailable(f"{name} {method}: code {code}", **where)
         raise PluginError("DSM keeps closing the session")

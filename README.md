@@ -4,6 +4,8 @@
 
 It signs in with a `POST` (so the password never appears in a URL) and reads with `GET` requests only. It never starts an update check, a SMART test, a scrub or anything else.
 
+Needs **Omini 1.7 or later** (it uses the HTTP client, login state, optional reads and errors of the plugin SDK that ships with it).
+
 > **Experimental.** This plugin was built from Synology's Web API guides and the requests DSM's own web interface makes, and tested against answers shaped like them, not on a real Synology NAS yet. Reports from real systems are welcome.
 
 ## What it reads
@@ -18,7 +20,7 @@ It signs in with a `POST` (so the password never appears in a URL) and reads wit
 | Container Manager (or the older Docker package): containers, image, running | Services |
 | The installed version | Firmware (current only) |
 
-The NAS is keyed by the MAC of the interface that has the address Omini connects to, else `synology:<serial>`.
+The NAS is keyed by the MAC of the interface that has the address Omini connects to, else the lowest MAC of a physical port, else `synology:<serial>` (never the server name, which can be edited), else `synology:<address>`.
 
 IPv6 is first-class: global and ULA IPv6 addresses are reported next to IPv4, in their short form; link-local addresses stay out, except the IPv6 default gateway's (an IPv6 router announces itself by its link-local address).
 
@@ -40,9 +42,9 @@ The plugin cannot answer a one-time code: **the account must not use 2-step veri
 
 ### Sessions
 
-The plugin signs in once and keeps the session id (and only that, with a hash of the address and credentials, readable by its owner only, `0600`) in its state folder, so the next collections reuse it instead of signing in every minute (every sign-in is logged by DSM and may send a "new sign-in" notification). A session DSM closed (timed out, signed out) is opened again, once. A connection test, which runs with a state folder of its own, and a run without a state folder **sign out** at the end. Changing the address, username or password opens a new session.
+The plugin signs in once and keeps the session id (and only that, with a hash of the address and credentials, readable by its owner only, `0600`) in its state folder (`session.json`), so the next collections reuse it instead of signing in every minute (every sign-in is logged by DSM and may send a "new sign-in" notification). A session DSM closed (timed out, signed out) is opened again, once. A connection test, which runs with a state folder of its own, and a run without a state folder **sign out** at the end. Changing the address, username or password opens a new session.
 
-After DSM rejects the credentials (or blocks the address), the plugin waits 10 minutes before signing in again: DSM blocks an address after repeated failed sign-ins (**Control Panel → Security → Protection**, 10 in 5 minutes by default).
+After DSM rejects the username or password (code 400), the plugin waits 10 minutes before signing in again (kept in `login-refused.json`, cleared by a good sign-in; other credentials are tried at once): DSM blocks an address after repeated failed sign-ins (**Control Panel → Security → Protection**, 10 in 5 minutes by default). Other refusals (a disabled account, a blocked address, 2-step verification) are tried again at the next run.
 
 ## Form fields
 
@@ -52,7 +54,7 @@ After DSM rejects the credentials (or blocks the address), the plugin waits 10 m
 | Username | `omini` | A dedicated account without 2-step verification |
 | Password | | Stored encrypted by Omini, never logged, never written to the state folder |
 | Verify the TLS certificate (Advanced) | off | DSM uses a self-signed certificate by default |
-| Wait for an answer, seconds (Advanced) | `15` | How long to wait for each answer (5 to 120) |
+| Timeout, seconds (Advanced) | `15` | How long to wait for each answer (5 to 120). A refused connection or a busy NAS (429, 503) is asked again, twice, with a pause; a `GET` that timed out, once (the sign-in, a `POST`, is not sent again after a timeout) |
 
 ## How it works
 
@@ -69,7 +71,7 @@ After DSM rejects the credentials (or blocks the address), the plugin waits 10 m
 | `SYNO.Storage.CGI.Storage` `load_info` | `volumes` (`vol_path`, `fs_type`, `size.total`, `size.used`, `status`), `disks` (`name`, `temp`, `smart_status`) |
 | `SYNO.Docker.Container` `list` (`limit=-1`, `type=all`) | `containers`: `name`, `image`, `status` |
 
-An API the account may not use (code 105) or that is not installed (codes 102 to 104: Container Manager missing) leaves that data out and never fails the collection; a timeout, a refused sign-in or a missing system information fails it (Omini keeps the last good data).
+An API the account may not use (code 105), that is not installed (codes 102 to 104: Container Manager missing), that answers another error code or a server error, or that times out leaves that data out (logged once) and never fails the collection; the connection test lists what the account may not read. A refused sign-in, a NAS out of reach or a missing system information fails it (Omini keeps the last good data).
 
 ## Known limitations
 

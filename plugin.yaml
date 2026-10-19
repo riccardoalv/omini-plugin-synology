@@ -40,7 +40,7 @@ fields:
     help: DSM uses a self-signed certificate by default; turn this on if yours is trusted.
   - key: timeout_s
     type: int
-    label: Wait for an answer (seconds)
+    label: Timeout (seconds)
     default: 15
     group: Advanced
-    help: How long to wait for each answer of the API (5 to 120). Raise it if the integration says DSM did not answer in time.
+    help: How long to wait for each answer of the API (5 to 120); a refused connection or a busy NAS is asked again.
